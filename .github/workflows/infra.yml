@@ -1,0 +1,37 @@
+name: infra
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [infra/**, docker-compose.yml, .env.example, .env.stack, scripts/**, .github/workflows/infra.yml]
+  pull_request:
+    paths: [infra/**, docker-compose.yml, .env.example, .env.stack, scripts/**, .github/workflows/infra.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+      - run: tofu fmt -check -recursive
+      - run: tofu init -backend=false -input=false
+      - run: tofu validate
+      - run: tofu test   # plans stage 1 (host) and stage 2 (fargate) against a mocked AWS provider
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config -q
+      - name: Host compose (stage 1 EC2 host)
+        working-directory: infra/terraform/host
+        run: |
+          printf 'CS2WP_IMAGE=x\nHOST_PRIVATE_IP=10.0.0.1\nCS2WP_LOG_GROUP=x\nAWS_DEFAULT_REGION=us-east-1\n' > .env
+          docker compose config -q
+      - run: python3 -m py_compile scripts/seed.py scripts/make_seed.py

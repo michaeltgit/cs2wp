@@ -1,0 +1,32 @@
+[project]
+name = "cs2wp-api"
+version = "0.1.0"
+description = "cs2wp API: read endpoints, model switching, live WebSocket"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cs2wp-core[all]",  # S3, Postgres and Kafka drivers: services run in lite and stack mode
+    "cs2wp-pipeline",
+    "cs2wp-ml",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+]
+
+[project.scripts]
+cs2wp-api = "cs2wp_api:main"
+
+[tool.uv.sources]
+cs2wp-core = { workspace = true }
+cs2wp-pipeline = { workspace = true }
+cs2wp-ml = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cs2wp_api"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

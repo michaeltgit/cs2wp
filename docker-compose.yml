@@ -1,0 +1,111 @@
+# The AWS setup on one machine (README "Run it"). Stand-ins:
+#   S3 (4 buckets)                    -> SeaweedFS S3 gateway :9000
+#   RDS Postgres                      -> Postgres 16 :5432
+#   Kafka on the EC2 host             -> Redpanda :19092 (the same container runs on EC2)
+#   EC2 host: api, workers, runtime   -> the same containers, one Python image
+#   CloudFront + S3 website           -> web (nginx) :8080
+#
+#   docker compose up -d                          # stand-ins only
+#   docker compose --profile app up -d --build    # + our services
+#   docker compose --profile downloader up -d     # + the HLTV downloader (opt-in)
+name: cs2wp
+
+# One image for every Python service: built once (by `api`), shared by the workers and runtime.
+x-py: &py
+  image: cs2wp-python:local
+  pull_policy: never   # local build, never on a registry
+  env_file: [.env.stack]
+  environment:
+    CS2WP_S3_ENDPOINT: http://s3:9000
+    CS2WP_DATABASE_URL: postgresql+psycopg://cs2wp:cs2wp@postgres:5432/cs2wp
+    CS2WP_KAFKA_BOOTSTRAP: redpanda:9092
+  depends_on:
+    postgres: { condition: service_healthy }
+    s3-init: { condition: service_completed_successfully }
+    redpanda-init: { condition: service_completed_successfully }
+  profiles: [app]
+  restart: unless-stopped
+
+services:
+  s3:
+    # SeaweedFS S3 gateway (MinIO stopped publishing public images in 2025). Any access key works.
+    image: chrislusf/seaweedfs:3.97
+    command: server -dir=/data -s3 -s3.port=9000 -master.volumeSizeLimitMB=100 -master.volumePreallocate=false -volume.max=0
+    ports: ["9000:9000"]
+    volumes: [s3:/data]
+    healthcheck: { test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9000/healthz"], interval: 3s, retries: 40 }
+
+  s3-init:
+    image: chrislusf/seaweedfs:3.97
+    depends_on: { s3: { condition: service_healthy } }
+    entrypoint: >
+      sh -c "for b in cs2wp-demo-archive cs2wp-gs-data cs2wp-model-artifacts cs2wp-web-assets;
+             do echo s3.bucket.create -name $$b | weed shell -master=s3:9333 || true; done"
+
+  postgres:
+    image: postgres:16.4-alpine
+    environment: { POSTGRES_USER: cs2wp, POSTGRES_PASSWORD: cs2wp, POSTGRES_DB: cs2wp }
+    ports: ["5432:5432"]
+    volumes: [pg:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD", "pg_isready", "-U", "cs2wp"], interval: 3s, retries: 20 }
+
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    command: >
+      redpanda start --mode dev-container --smp 1 --memory 1G --overprovisioned
+      --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+    ports: ["19092:19092"]
+    healthcheck: { test: ["CMD", "rpk", "cluster", "health", "--exit-when-healthy"], interval: 3s, retries: 30 }
+
+  redpanda-init:
+    image: redpandadata/redpanda:v24.2.7
+    depends_on: { redpanda: { condition: service_healthy } }
+    entrypoint: >
+      sh -c "for t in raw-gs ui-game-state round-predictions map-evidence market-quotes system-commands system-events;
+             do rpk topic create $$t -X brokers=redpanda:9092 -p 3 || true; done"
+
+  api:
+    <<: *py
+    build:
+      context: .
+      dockerfile: infra/docker/python.Dockerfile
+    ports: ["8000:8000"]
+    environment:
+      CS2WP_S3_ENDPOINT: http://s3:9000
+      CS2WP_DATABASE_URL: postgresql+psycopg://cs2wp:cs2wp@postgres:5432/cs2wp
+      CS2WP_KAFKA_BOOTSTRAP: redpanda:9092
+      CS2WP_EMBEDDED_WORKERS: "0"
+      CS2WP_CORS_ORIGINS: http://localhost:8080,http://localhost:5173,https://www.hltv.org
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/healthz"], interval: 5s, retries: 30 }
+
+  pipeline-worker:
+    <<: *py
+    command: ["cs2wp-pipeline", "worker", "--no-inbox"]
+
+  runtime:
+    <<: *py
+    command: ["cs2wp-pipeline", "runtime"]
+
+  ml-worker:
+    <<: *py
+    command: ["cs2wp-ml", "worker"]
+
+  # HLTV downloader (opt-in: docker compose --profile downloader up -d): starred matches since the
+  # CS2 release, newest first, into storage uploads/ where the pipeline worker picks them up.
+  downloader:
+    <<: *py
+    profiles: [downloader]
+    command: ["cs2wp-pipeline", "hltv-sync", "--pages", "2", "--limit", "50", "--every-hours", "6"]
+
+  web:
+    build:
+      context: ./web
+    image: cs2wp-web:local
+    ports: ["8080:80"]
+    depends_on: { api: { condition: service_healthy } }
+    profiles: [app]
+
+volumes:
+  s3: {}
+  pg: {}

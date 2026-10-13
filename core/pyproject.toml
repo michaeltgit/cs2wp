@@ -1,0 +1,31 @@
+[project]
+name = "cs2wp-core"
+version = "0.1.0"
+description = "cs2wp shared library: contracts, storage, database, bus, features, map odds, model loading"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "pandas>=2.2",
+    "pyarrow>=16",
+    "pydantic>=2.7",
+    "sqlalchemy>=2.0",
+    "lightgbm>=4.3",
+    "scikit-learn>=1.5",
+]
+
+[project.optional-dependencies]
+s3 = ["boto3>=1.34"]
+postgres = ["psycopg[binary]>=3.1"]
+kafka = ["aiokafka>=0.11"]
+all = ["boto3>=1.34", "psycopg[binary]>=3.1", "aiokafka>=0.11"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cs2wp_core"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

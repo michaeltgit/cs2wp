@@ -1,0 +1,29 @@
+# local data (sample dataset, uploads, models); the S3 stand-in in lite mode
+/data/
+data/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# node
+node_modules/
+coverage/
+*.local
+.vite/
+*.tsbuildinfo
+*.log
+
+# terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+
+dist/
+.DS_Store
+.env

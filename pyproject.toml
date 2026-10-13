@@ -1,0 +1,15 @@
+# uv workspace: one lockfile and one virtualenv for every Python package in the repo.
+#   uv sync --all-packages        # from the repo root
+[tool.uv.workspace]
+members = ["core", "pipeline", "ml", "api"]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "httpx>=0.27", "ruff>=0.5"]
+
+[tool.ruff]
+line-length = 120
+src = ["core/src", "pipeline/src", "ml/src", "api/src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "UP042", "B905", "B008", "B023"]  # B023: closures used inside the loop body

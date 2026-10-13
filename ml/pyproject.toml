@@ -1,0 +1,26 @@
+[project]
+name = "cs2wp-ml"
+version = "0.1.0"
+description = "cs2wp training, evaluation and model registry"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cs2wp-core[all]",  # S3, Postgres and Kafka drivers: services run in lite and stack mode
+    "matplotlib>=3.8",
+]
+
+[project.scripts]
+cs2wp-ml = "cs2wp_ml:main"
+
+[tool.uv.sources]
+cs2wp-core = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cs2wp_ml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

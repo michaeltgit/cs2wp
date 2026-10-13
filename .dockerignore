@@ -1,0 +1,12 @@
+# The Python image is built from the repo root (see infra/docker/python.Dockerfile).
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/node_modules
+.git
+data
+**/data
+web
+docs
+infra/terraform

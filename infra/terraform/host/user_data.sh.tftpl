@@ -1,0 +1,59 @@
+#!/bin/bash
+# First boot of the cs2wp Linux host (Amazon Linux 2023). Installs Docker + compose, writes
+# /opt/cs2wp/{compose.yml,start.sh} and starts the services. Deploy later = run start.sh again.
+set -euxo pipefail
+
+dnf install -y docker jq
+systemctl enable --now docker
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -fsSL "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-$(uname -m)" \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+mkdir -p /opt/cs2wp
+echo '${compose_b64}' | base64 -d > /opt/cs2wp/compose.yml
+
+cat > /opt/cs2wp/start.sh <<'START'
+#!/bin/bash
+# (Re)deploy: fetch secrets, write .env, pull the image, (re)start. Run via SSM:
+#   sudo /opt/cs2wp/start.sh                       (pulls CS2WP_IMAGE, default :latest)
+#   sudo CS2WP_IMAGE=ghcr.io/...:<sha> /opt/cs2wp/start.sh
+set -euo pipefail
+cd /opt/cs2wp
+export AWS_DEFAULT_REGION='${region}'
+IMDS=$(curl -sfX PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+PRIVATE_IP=$(curl -sf -H "X-aws-ec2-metadata-token: $IMDS" http://169.254.169.254/latest/meta-data/local-ipv4)
+secret() { aws secretsmanager get-secret-value --secret-id "$1" --query SecretString --output text; }
+
+DB_PASSWORD=$(secret '${db_secret_arn}' | jq -r .password)
+# GHCR pull credentials ({"username": ..., "password": <PAT with read:packages>}); skipped while unset
+if GHCR=$(secret '${ghcr_secret_arn}' 2>/dev/null); then
+  echo "$GHCR" | jq -r .password | docker login ghcr.io -u "$(echo "$GHCR" | jq -r .username)" --password-stdin
+fi
+
+umask 077
+cat > .env <<ENV
+CS2WP_IMAGE=$${CS2WP_IMAGE:-${image}}
+HOST_PRIVATE_IP=$PRIVATE_IP
+COMPOSE_PROFILES=${compose_profiles}
+CS2WP_LOG_GROUP=${log_group}
+AWS_DEFAULT_REGION=${region}
+CS2WP_DATA=/data
+CS2WP_STORAGE=s3
+CS2WP_S3_BUCKET_DEMOS=${bucket_demos}
+CS2WP_S3_BUCKET_GS=${bucket_gs}
+CS2WP_S3_BUCKET_MODELS=${bucket_models}
+CS2WP_DATABASE_URL=postgresql+psycopg://cs2wp:{password}@${db_address}:5432/cs2wp
+CS2WP_DATABASE_PASSWORD='$DB_PASSWORD'
+CS2WP_BUS=kafka
+CS2WP_KAFKA_BOOTSTRAP=redpanda:9092
+CS2WP_EMBEDDED_WORKERS=0
+CS2WP_CORS_ORIGINS=${cors_origins}
+ENV
+
+docker compose pull
+docker compose up -d --remove-orphans
+docker compose ps
+START
+chmod 700 /opt/cs2wp/start.sh
+/opt/cs2wp/start.sh

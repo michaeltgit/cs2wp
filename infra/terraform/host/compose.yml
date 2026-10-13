@@ -1,0 +1,62 @@
+# Runs on the EC2 Linux host (written to /opt/cs2wp by user_data, see host.tf). Same image and
+# commands as the root docker-compose.yml; S3 and Postgres are the real AWS services here, so only
+# Redpanda runs next to the Python services. Values come from /opt/cs2wp/.env (written by start.sh).
+name: cs2wp
+
+x-py: &py
+  image: ${CS2WP_IMAGE}
+  env_file: [.env]
+  volumes: [data:/data]
+  depends_on:
+    redpanda-init: { condition: service_completed_successfully }
+  restart: unless-stopped
+  logging:
+    driver: awslogs
+    options: { awslogs-group: "${CS2WP_LOG_GROUP}", awslogs-region: "${AWS_DEFAULT_REGION}" }
+
+services:
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    # Single broker. Stage 3 swaps this for a 3-broker cluster or MSK (docs/DEPLOYMENT.md).
+    command: >
+      redpanda start --mode dev-container --smp 1 --memory 1G --overprovisioned
+      --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      --advertise-kafka-addr internal://redpanda:9092,external://${HOST_PRIVATE_IP}:19092
+    ports: ["19092:19092"]   # VPC only (security group): the Fargate API connects here in stage 2
+    volumes: [redpanda:/var/lib/redpanda/data]
+    restart: unless-stopped
+    healthcheck: { test: ["CMD", "rpk", "cluster", "health", "--exit-when-healthy"], interval: 3s, retries: 30 }
+
+  redpanda-init:
+    image: redpandadata/redpanda:v24.2.7
+    depends_on: { redpanda: { condition: service_healthy } }
+    entrypoint: >
+      sh -c "for t in raw-gs ui-game-state round-predictions map-evidence market-quotes system-commands system-events;
+             do rpk topic create $$t -X brokers=redpanda:9092 -p 3 || true; done"
+
+  api:
+    <<: *py
+    profiles: [api]          # host mode only; in fargate mode the API runs on ECS
+    ports: ["8000:8000"]     # CloudFront origin-facing IPs only (security group)
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/healthz"], interval: 10s, retries: 30 }
+
+  pipeline-worker:
+    <<: *py
+    command: ["cs2wp-pipeline", "worker", "--no-inbox"]
+
+  runtime:
+    <<: *py
+    command: ["cs2wp-pipeline", "runtime"]
+
+  ml-worker:
+    <<: *py
+    command: ["cs2wp-ml", "worker"]
+
+  downloader:            # HLTV downloader, opt-in: add "downloader" to COMPOSE_PROFILES
+    <<: *py
+    profiles: [downloader]
+    command: ["cs2wp-pipeline", "hltv-sync", "--pages", "2", "--limit", "50", "--every-hours", "6"]
+
+volumes:
+  data: {}       # local cache in front of S3 (S3 is the source of truth)
+  redpanda: {}
